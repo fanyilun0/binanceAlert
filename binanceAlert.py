@@ -52,8 +52,8 @@ def check_for_launchpool_articles():
                 title = article["title"]
 
                 # 如果文章ID之前没有处理过，并且标题中包含 "Launchpool"
-                #if article_id not in processed_article_ids and "Launchpool" in title:
-                if article_id not in processed_article_ids in title:
+                if article_id not in processed_article_ids and "Launch" in title:
+                #if article_id not in processed_article_ids in title:
                     log_with_time(f"New Launchpool article found: {title}")
                     # 在此处可以扩展，例如发送邮件或其他通知
 
