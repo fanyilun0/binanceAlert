@@ -1,0 +1,421 @@
+import requests
+import time
+import aiohttp
+import asyncio
+from datetime import datetime
+import bs4
+from bs4 import BeautifulSoup
+import json
+import re
+
+# Add new configuration constants
+WEBHOOK_URL = 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?'
+PROXY_URL = 'http://localhost:7890'
+USE_PROXY = True
+ALWAYS_NOTIFY = False
+
+# HTML URL
+api_url = "https://www.binance.com/en/support/announcement/new-cryptocurrency-listing?c=48&navId=48&hl=en"
+
+# 记录已经处理过的文章ID，避免重复提醒
+processed_article_ids = set()
+
+# 监控周期，单位：秒
+monitor_interval = 60  # 每隔 60 秒查询一次
+
+# 添加一个新的变量来存储上次的文章ID集合
+last_article_ids = set()
+
+async def send_message_async(message_content):
+    """发送消息到企业微信机器人"""
+    headers = {'Content-Type': 'application/json'}
+    
+    payload = {
+        "msgtype": "text",
+        "text": {
+            "content": message_content
+        }
+    }
+    
+    proxy = PROXY_URL if USE_PROXY else None
+    async with aiohttp.ClientSession() as session:
+        async with session.post(WEBHOOK_URL, json=payload, headers=headers, proxy=proxy) as response:
+            if response.status == 200:
+                log_with_time("Message sent successfully!")
+            else:
+                log_with_time(f"Failed to send message: {response.status}")
+
+# 打印时加上时间戳
+def log_with_time(message):
+    """打印带时间戳的消息"""
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{current_time}] {message}")
+
+# 初始化时获取现有的文章ID
+def initialize_processed_articles():
+    """初始化时获取当前所有文章ID，避免启动时提醒已有文章"""
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        response = requests.get(api_url, headers=headers)
+        # print(response.text)
+        print(response.text)
+
+        soup = BeautifulSoup(response.text, 'html.parser')
+        titles = soup.find_all('h1 + div a')
+        # print(titles)
+        print(len(titles))
+
+        for title in titles:
+            title_text = title.get_text().strip()
+            content = title.find_next('div')
+            content_text = content.get_text().strip() if content else ""
+            announcement_id = hash(title_text + content_text)
+            processed_article_ids.add(announcement_id)
+
+        log_with_time("Initialization complete. Monitoring new articles...")
+    
+    except Exception as e:
+        log_with_time(f"Error during initialization: {e}")
+
+
+# 检查是否有包含新得币种上线公告
+async def check_for_launchpool_articles():
+    """检查网页中是否有新的币种上线公告"""
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        response = requests.get(api_url, headers=headers)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # 找到所有的 h1 标题
+        titles = soup.find_all('h1 + div a')
+        # print(titles)
+        print(len(titles))
+
+        for title in titles:
+            title_text = title.get_text().strip()
+            # 获取标题后面的 div 内容
+            content = title.find_next('div')
+            content_text = content.get_text().strip() if content else ""
+            
+            # 生成唯一ID（使用标题和内容的组合）
+            announcement_id = hash(title_text + content_text)
+            
+            if announcement_id not in processed_article_ids and "New Cryptocurrency Listing" in title_text:
+                message = f"New Listing Found:\nTitle: {title_text}\nContent: {content_text}"
+                log_with_time(message)
+                await send_message_async(message)
+                processed_article_ids.add(announcement_id)
+
+    except Exception as e:
+        log_with_time(f"Error fetching or processing data: {e}")
+
+# 修改 monitor 函数为异步函数
+async def monitor():
+    """启动监控程序"""
+    global last_article_ids
+    
+    log_with_time("Starting monitor...")
+    
+    # 首次运行，获取当前文章列表
+    initial_articles = save_and_parse_html_content()
+    if initial_articles:
+        last_article_ids = {article['id'] for article in initial_articles}
+        log_with_time(f"Initialized with {len(last_article_ids)} articles")
+
+    while True:
+        try:
+            log_with_time("Checking for new articles...")
+            articles = save_and_parse_html_content()
+            
+            if not articles:
+                log_with_time("No articles found in this check")
+                await asyncio.sleep(monitor_interval)
+                continue
+                
+            # 获取当前文章ID集合
+            current_article_ids = {article['id'] for article in articles}
+            
+            # 找出新增的文章ID
+            new_article_ids = current_article_ids - last_article_ids
+            
+            if new_article_ids:
+                log_with_time(f"Found {len(new_article_ids)} new articles")
+                # 获取新文章的详细信息并发送通知
+                for article in articles:
+                    if article['id'] in new_article_ids:
+                        message = (
+                            f"🔥 New Listing Alert 🔥\n"
+                            f"Title: {article['title']}\n"
+                            f"Time: {article['release_date']}\n"
+                            f"Link: https://www.binance.com/en/support/announcement/{article['code']}"
+                        )
+                        log_with_time(f"Sending notification for article {article['id']}")
+                        await send_message_async(message)
+            else:
+                log_with_time("No new articles found")
+            
+            # 更新上次的文章ID集合
+            last_article_ids = current_article_ids
+            
+        except Exception as e:
+            log_with_time(f"Error in monitor loop: {e}")
+        
+        log_with_time(f"Waiting for {monitor_interval} seconds before next check...")
+        await asyncio.sleep(monitor_interval)
+
+# 添加一个调试函数来模拟新文章
+async def test_monitor():
+    """测试监控功能"""
+    global last_article_ids
+    
+    # 模拟第一次获取数据
+    test_data_1 = [
+        {'id': 1, 'title': 'Old Article 1', 'code': 'code1', 'release_date': '2024-01-01'},
+        {'id': 2, 'title': 'Old Article 2', 'code': 'code2', 'release_date': '2024-01-02'}
+    ]
+    
+    # 模拟第二次获取数据（添加了新文章）
+    test_data_2 = [
+        {'id': 1, 'title': 'Old Article 1', 'code': 'code1', 'release_date': '2024-01-01'},
+        {'id': 2, 'title': 'Old Article 2', 'code': 'code2', 'release_date': '2024-01-02'},
+        {'id': 3, 'title': 'New Article 3', 'code': 'code3', 'release_date': '2024-01-03'}
+    ]
+    
+    # 第一次运行
+    last_article_ids = {article['id'] for article in test_data_1}
+    log_with_time("Test: Initialized with test data")
+    
+    # 等待一秒
+    await asyncio.sleep(1)
+    
+    # 模拟发现新文章
+    current_article_ids = {article['id'] for article in test_data_2}
+    new_article_ids = current_article_ids - last_article_ids
+    
+    if new_article_ids:
+        for article in test_data_2:
+            if article['id'] in new_article_ids:
+                message = (
+                    f"🔥 Test: New Listing Alert 🔥\n"
+                    f"Title: {article['title']}\n"
+                    f"Time: {article['release_date']}\n"
+                    f"Link: https://www.binance.com/en/support/announcement/{article['code']}"
+                )
+                await send_message_async(message)
+
+# 在文件末尾添加一个测试函数
+async def test_webhook():
+    """测试企业微信机器人消息推送"""
+    test_message = "这是一条测试消息 - " + datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_with_time("发送测试消息...")
+    await send_message_async(test_message)
+
+async def test_article_detection():
+    """测试文章检测功能"""
+    # 清空已处理文章集合
+    processed_article_ids.clear()
+    
+    # 运行一次检测
+    await check_for_launchpool_articles()
+    
+    # 等待消息发送完成
+    await asyncio.sleep(2)
+
+async def save_html_content():
+    """保存HTML内容到本地文件"""
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1'
+        }
+        
+        timeout = aiohttp.ClientTimeout(total=10)  # 10秒超时
+        
+        log_with_time("Starting request...")
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            log_with_time("Sending request to Binance...")
+            async with session.get(api_url, headers=headers, proxy=PROXY_URL if USE_PROXY else None) as response:
+                log_with_time(f"Response status: {response.status}")
+                html = await response.text()
+                log_with_time(f"Received content length: {len(html)}")
+                
+                # 保存原始HTML
+                with open('binance_listing.html', 'w', encoding='utf-8') as f:
+                    f.write(html)
+                log_with_time("Raw HTML saved to binance_listing.html")
+                
+                # 保存格式化后的HTML（便于查看）
+                soup = BeautifulSoup(html, 'html.parser')
+                pretty_html = soup.prettify()
+                with open('binance_listing_formatted.html', 'w', encoding='utf-8') as f:
+                    f.write(pretty_html)
+                log_with_time("Formatted HTML saved to binance_listing_formatted.html")
+                
+                return html
+
+    except aiohttp.ClientError as e:
+        log_with_time(f"Network error: {e}")
+    except asyncio.TimeoutError:
+        log_with_time("Request timed out")
+    except Exception as e:
+        log_with_time(f"Error saving HTML content: {e}")
+    return None
+
+# 或者使用同步方式尝试
+def save_html_content_sync():
+    """使用同步方式保存HTML内容"""
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        
+        log_with_time("Starting request...")
+        response = requests.get(api_url, headers=headers, timeout=10, proxies={'http': PROXY_URL, 'https': PROXY_URL} if USE_PROXY else None)
+        log_with_time(f"Response status: {response.status_code}")
+        
+        html = response.text
+        log_with_time(f"Received content length: {len(html)}")
+        
+        # 保存原始HTML
+        with open('binance_listing.html', 'w', encoding='utf-8') as f:
+            f.write(html)
+        log_with_time("Raw HTML saved to binance_listing.html")
+        
+        # 保存格式化后的HTML
+        soup = BeautifulSoup(html, 'html.parser')
+        pretty_html = soup.prettify()
+        with open('binance_listing_formatted.html', 'w', encoding='utf-8') as f:
+            f.write(pretty_html)
+        log_with_time("Formatted HTML saved to binance_listing_formatted.html")
+        
+        return html
+        
+    except requests.RequestException as e:
+        log_with_time(f"Request error: {e}")
+    except Exception as e:
+        log_with_time(f"Error saving HTML content: {e}")
+    return None
+
+def parse_listing_data(html_content):
+    """从HTML内容中解析出新币上线信息"""
+    try:
+        # 查找包含目标数据的script标签
+        pattern = r'<script id="__APP_DATA" type="application/json".*?>(.*?)</script>'
+        script_content = re.search(pattern, html_content, re.DOTALL)
+        
+        if not script_content:
+            log_with_time("No APP_DATA script found")
+            return None
+            
+        # 解析JSON数据
+        json_data = json.loads(script_content.group(1))
+        
+        # 查找目标catalog
+        catalogs = json_data['appState']['loader']['dataByRouteId']['d9b2']['catalogs']
+        target_catalog = None
+        
+        for catalog in catalogs:
+            if catalog.get('catalogName') == "New Cryptocurrency Listing":
+                target_catalog = catalog
+                break
+                
+        if not target_catalog:
+            log_with_time("No New Cryptocurrency Listing catalog found")
+            return None
+            
+        # 解析文章列表
+        articles = target_catalog['articles']
+        log_with_time(f"Found {len(articles)} articles")
+        
+        # 格式化文章信息
+        formatted_articles = []
+        for article in articles:
+            formatted_article = {
+                'id': article['id'],
+                'code': article['code'],
+                'title': article['title'],
+                'release_date': datetime.fromtimestamp(article['releaseDate']/1000).strftime('%Y-%m-%d %H:%M:%S')
+            }
+            formatted_articles.append(formatted_article)
+            
+        return formatted_articles
+
+    except json.JSONDecodeError as e:
+        log_with_time(f"JSON parsing error: {e}")
+    except Exception as e:
+        log_with_time(f"Error parsing listing data: {e}")
+    return None
+
+def save_and_parse_html_content():
+    """保存HTML内容并解析数据"""
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        
+        log_with_time("Starting request...")
+        response = requests.get(api_url, headers=headers, timeout=10, 
+                              proxies={'http': PROXY_URL, 'https': PROXY_URL} if USE_PROXY else None)
+        log_with_time(f"Response status: {response.status_code}")
+        
+        html = response.text
+        log_with_time(f"Received content length: {len(html)}")
+        
+        # 保存原始HTML
+        with open('binance_listing.html', 'w', encoding='utf-8') as f:
+            f.write(html)
+        log_with_time("Raw HTML saved to binance_listing.html")
+        
+        # 解析数据
+        articles = parse_listing_data(html)
+        if articles:
+            # 保存解析后的数据
+            with open('binance_listing_data.json', 'w', encoding='utf-8') as f:
+                json.dump(articles, f, ensure_ascii=False, indent=2)
+            log_with_time("Parsed data saved to binance_listing_data.json")
+            
+            # 打印最新的5条公告
+            log_with_time("\nLatest 5 announcements:")
+            for article in articles[:5]:
+                log_with_time(f"\nTitle: {article['title']}")
+                log_with_time(f"Release Date: {article['release_date']}")
+                log_with_time(f"ID: {article['id']}")
+                log_with_time("-" * 50)
+        
+        return articles
+        
+    except requests.RequestException as e:
+        log_with_time(f"Request error: {e}")
+    except Exception as e:
+        log_with_time(f"Error in save_and_parse_html_content: {e}")
+    return None
+
+# 修改 main 部分
+if __name__ == "__main__":
+    # 运行测试
+    # asyncio.run(test_monitor())
+    
+    # 文章检测测试
+    # asyncio.run(test_article_detection())
+
+    # 保存HTML内容
+    # asyncio.run(save_html_content())
+
+    # 或者尝试同步方式
+    # save_html_content_sync()
+
+    # articles = save_and_parse_html_content()
+
+    # 运行测试
+    # asyncio.run(test_monitor())
+
+    # 正常监控模式
+    asyncio.run(monitor())
