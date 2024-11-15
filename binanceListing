@@ -3,16 +3,15 @@ import time
 import aiohttp
 import asyncio
 from datetime import datetime
-import bs4
 from bs4 import BeautifulSoup
 import json
 import re
 
 # Add new configuration constants
-WEBHOOK_URL = 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?'
+WEBHOOK_URL = 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key='
 PROXY_URL = 'http://localhost:7890'
 USE_PROXY = True
-ALWAYS_NOTIFY = False
+ALWAYS_NOTIFY = True
 
 # HTML URL
 api_url = "https://www.binance.com/en/support/announcement/new-cryptocurrency-listing?c=48&navId=48&hl=en"
@@ -40,6 +39,9 @@ async def send_message_async(message_content):
     proxy = PROXY_URL if USE_PROXY else None
     async with aiohttp.ClientSession() as session:
         async with session.post(WEBHOOK_URL, json=payload, headers=headers, proxy=proxy) as response:
+            # print response
+            # print(response)
+
             if response.status == 200:
                 log_with_time("Message sent successfully!")
             else:
@@ -64,8 +66,6 @@ def initialize_processed_articles():
 
         soup = BeautifulSoup(response.text, 'html.parser')
         titles = soup.find_all('h1 + div a')
-        # print(titles)
-        print(len(titles))
 
         for title in titles:
             title_text = title.get_text().strip()
@@ -125,6 +125,17 @@ async def monitor():
     if initial_articles:
         last_article_ids = {article['id'] for article in initial_articles}
         log_with_time(f"Initialized with {len(last_article_ids)} articles")
+        
+        # 如果设置了ALWAYS_NOTIFY，则发送初始文章通知
+        if ALWAYS_NOTIFY:
+            for article in initial_articles[:5]:  # 只发送最新的5条
+                filtered_title = article['title'].replace('Binance', '')
+                message = (
+                    f"📢 Initial Listing Alert 📢\n"
+                    f"Title: {filtered_title}\n"
+                    f"Time: {article['release_date']}\n"
+                )
+                await send_message_async(message)
 
     while True:
         try:
@@ -147,11 +158,12 @@ async def monitor():
                 # 获取新文章的详细信息并发送通知
                 for article in articles:
                     if article['id'] in new_article_ids:
+                        # Replace sensitive keywords in title
+                        filtered_title = article['title'].replace('Binance', '')
                         message = (
                             f"🔥 New Listing Alert 🔥\n"
-                            f"Title: {article['title']}\n"
+                            f"Title: {filtered_title}\n"
                             f"Time: {article['release_date']}\n"
-                            f"Link: https://www.binance.com/en/support/announcement/{article['code']}"
                         )
                         log_with_time(f"Sending notification for article {article['id']}")
                         await send_message_async(message)
@@ -163,6 +175,8 @@ async def monitor():
             
         except Exception as e:
             log_with_time(f"Error in monitor loop: {e}")
+            # 发送错误通知
+            await send_message_async(f"❌ Monitor Error: {str(e)}")
         
         log_with_time(f"Waiting for {monitor_interval} seconds before next check...")
         await asyncio.sleep(monitor_interval)
@@ -206,13 +220,6 @@ async def test_monitor():
                     f"Link: https://www.binance.com/en/support/announcement/{article['code']}"
                 )
                 await send_message_async(message)
-
-# 在文件末尾添加一个测试函数
-async def test_webhook():
-    """测试企业微信机器人消息推送"""
-    test_message = "这是一条测试消息 - " + datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    log_with_time("发送测试消息...")
-    await send_message_async(test_message)
 
 async def test_article_detection():
     """测试文章检测功能"""
@@ -385,9 +392,8 @@ def save_and_parse_html_content():
             # 打印最新的5条公告
             log_with_time("\nLatest 5 announcements:")
             for article in articles[:5]:
-                log_with_time(f"\nTitle: {article['title']}")
+                log_with_time(f"Title: {article['title']}")
                 log_with_time(f"Release Date: {article['release_date']}")
-                log_with_time(f"ID: {article['id']}")
                 log_with_time("-" * 50)
         
         return articles
@@ -400,22 +406,5 @@ def save_and_parse_html_content():
 
 # 修改 main 部分
 if __name__ == "__main__":
-    # 运行测试
-    # asyncio.run(test_monitor())
-    
-    # 文章检测测试
-    # asyncio.run(test_article_detection())
-
-    # 保存HTML内容
-    # asyncio.run(save_html_content())
-
-    # 或者尝试同步方式
-    # save_html_content_sync()
-
-    # articles = save_and_parse_html_content()
-
-    # 运行测试
-    # asyncio.run(test_monitor())
-
     # 正常监控模式
     asyncio.run(monitor())
