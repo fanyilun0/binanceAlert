@@ -1,4 +1,4 @@
-WEBHOOK_URL = 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=
+WEBHOOK_URL = 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key='
 PROXY_URL = 'http://localhost:7890'
 USE_PROXY = True
 ALWAYS_NOTIFY = True
