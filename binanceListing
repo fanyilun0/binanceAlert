@@ -7,20 +7,16 @@ from bs4 import BeautifulSoup
 import json
 import re
 
-# Add new configuration constants
-WEBHOOK_URL = 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key='
-PROXY_URL = 'http://localhost:7890'
-USE_PROXY = True
-ALWAYS_NOTIFY = True
+from config import WEBHOOK_URL, PROXY_URL, USE_PROXY, ALWAYS_NOTIFY, API_URL, MONITOR_INTERVAL
 
 # HTML URL
-api_url = "https://www.binance.com/en/support/announcement/new-cryptocurrency-listing?c=48&navId=48&hl=en"
+api_url = API_URL
+
+# 监控周期，单位：秒
+monitor_interval = MONITOR_INTERVAL  # 每隔 60 秒查询一次
 
 # 记录已经处理过的文章ID，避免重复提醒
 processed_article_ids = set()
-
-# 监控周期，单位：秒
-monitor_interval = 60  # 每隔 60 秒查询一次
 
 # 添加一个新的变量来存储上次的文章ID集合
 last_article_ids = set()
@@ -79,10 +75,34 @@ def initialize_processed_articles():
     except Exception as e:
         log_with_time(f"Error during initialization: {e}")
 
+def get_emoji_for_type(title):
+    """根据公告标题返回相应的 emoji"""
+    if "Introducing" in title or "上线" in title:
+        return "🚀"  # 新币种上线
+    elif "Launchpool" in title:
+        return "🌱"  # LaunchPool
+    elif "Futures" in title:
+        return "📈"  # 合约
+    elif "Options" in title:
+        return "📊"  # 期货
+    elif "Margin" in title:
+        return "💹"  # Margin
+    else:
+        return "ℹ️"  # 其他
+
+def build_listing_message(title, release_date, link):
+    """构建新币种上线公告的推送消息"""
+    emoji = get_emoji_for_type(title)  # 获取对应的 emoji
+    return (
+        f"{emoji} 新币种上线公告 📢\n"
+        f"标题: {title}\n"
+        f"时间: {release_date}\n"
+        f"链接: {link if link else '无链接'}"
+    )
 
 # 检查是否有包含新得币种上线公告
-async def check_for_launchpool_articles():
-    """检查网页中是否有新的币种上线公告"""
+async def check_for_new_listing_announcements():
+    """检查网页中是否有新的币种上线公告并发送通知"""
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
@@ -92,8 +112,6 @@ async def check_for_launchpool_articles():
         
         # 找到所有的 h1 标题
         titles = soup.find_all('h1 + div a')
-        # print(titles)
-        print(len(titles))
 
         for title in titles:
             title_text = title.get_text().strip()
@@ -104,8 +122,8 @@ async def check_for_launchpool_articles():
             # 生成唯一ID（使用标题和内容的组合）
             announcement_id = hash(title_text + content_text)
             
-            if announcement_id not in processed_article_ids and "New Cryptocurrency Listing" in title_text:
-                message = f"New Listing Found:\nTitle: {title_text}\nContent: {content_text}"
+            if announcement_id not in processed_article_ids:
+                message = build_listing_message(title_text, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), title['href'])
                 log_with_time(message)
                 await send_message_async(message)
                 processed_article_ids.add(announcement_id)
@@ -122,6 +140,7 @@ async def monitor():
     
     # 首次运行，获取当前文章列表
     initial_articles = save_and_parse_html_content()
+
     if initial_articles:
         last_article_ids = {article['id'] for article in initial_articles}
         log_with_time(f"Initialized with {len(last_article_ids)} articles")
@@ -134,6 +153,7 @@ async def monitor():
                     f"📢 Initial Listing Alert 📢\n"
                     f"Title: {filtered_title}\n"
                     f"Time: {article['release_date']}\n"
+                    f"Link: {article['link']}"
                 )
                 await send_message_async(message)
 
@@ -158,13 +178,8 @@ async def monitor():
                 # 获取新文章的详细信息并发送通知
                 for article in articles:
                     if article['id'] in new_article_ids:
-                        # Replace sensitive keywords in title
-                        filtered_title = article['title'].replace('Binance', '')
-                        message = (
-                            f"🔥 New Listing Alert 🔥\n"
-                            f"Title: {filtered_title}\n"
-                            f"Time: {article['release_date']}\n"
-                        )
+                        link = article.get('link', '无链接')
+                        message = build_listing_message(article['title'], article['release_date'], link)
                         log_with_time(f"Sending notification for article {article['id']}")
                         await send_message_async(message)
             else:
@@ -180,57 +195,6 @@ async def monitor():
         
         log_with_time(f"Waiting for {monitor_interval} seconds before next check...")
         await asyncio.sleep(monitor_interval)
-
-# 添加一个调试函数来模拟新文章
-async def test_monitor():
-    """测试监控功能"""
-    global last_article_ids
-    
-    # 模拟第一次获取数据
-    test_data_1 = [
-        {'id': 1, 'title': 'Old Article 1', 'code': 'code1', 'release_date': '2024-01-01'},
-        {'id': 2, 'title': 'Old Article 2', 'code': 'code2', 'release_date': '2024-01-02'}
-    ]
-    
-    # 模拟第二次获取数据（添加了新文章）
-    test_data_2 = [
-        {'id': 1, 'title': 'Old Article 1', 'code': 'code1', 'release_date': '2024-01-01'},
-        {'id': 2, 'title': 'Old Article 2', 'code': 'code2', 'release_date': '2024-01-02'},
-        {'id': 3, 'title': 'New Article 3', 'code': 'code3', 'release_date': '2024-01-03'}
-    ]
-    
-    # 第一次运行
-    last_article_ids = {article['id'] for article in test_data_1}
-    log_with_time("Test: Initialized with test data")
-    
-    # 等待一秒
-    await asyncio.sleep(1)
-    
-    # 模拟发现新文章
-    current_article_ids = {article['id'] for article in test_data_2}
-    new_article_ids = current_article_ids - last_article_ids
-    
-    if new_article_ids:
-        for article in test_data_2:
-            if article['id'] in new_article_ids:
-                message = (
-                    f"🔥 Test: New Listing Alert 🔥\n"
-                    f"Title: {article['title']}\n"
-                    f"Time: {article['release_date']}\n"
-                    f"Link: https://www.binance.com/en/support/announcement/{article['code']}"
-                )
-                await send_message_async(message)
-
-async def test_article_detection():
-    """测试文章检测功能"""
-    # 清空已处理文章集合
-    processed_article_ids.clear()
-    
-    # 运行一次检测
-    await check_for_launchpool_articles()
-    
-    # 等待消息发送完成
-    await asyncio.sleep(2)
 
 async def save_html_content():
     """保存HTML内容到本地文件"""
@@ -349,7 +313,8 @@ def parse_listing_data(html_content):
                 'id': article['id'],
                 'code': article['code'],
                 'title': article['title'],
-                'release_date': datetime.fromtimestamp(article['releaseDate']/1000).strftime('%Y-%m-%d %H:%M:%S')
+                'release_date': datetime.fromtimestamp(article['releaseDate']/1000).strftime('%Y-%m-%d %H:%M:%S'),
+                'link': build_article_link(article['title'], article['code'])
             }
             formatted_articles.append(formatted_article)
             
@@ -403,6 +368,13 @@ def save_and_parse_html_content():
     except Exception as e:
         log_with_time(f"Error in save_and_parse_html_content: {e}")
     return None
+
+def build_article_link(title, code):
+    """构建文章链接"""
+    base_url = "https://www.binance.com/en/support/announcement/"
+    # 将标题中的空格替换为 "-"，并将其转换为小写
+    formatted_title = title.replace(" ", "-").lower()
+    return f"{base_url}{formatted_title}-{code}"
 
 # 修改 main 部分
 if __name__ == "__main__":
