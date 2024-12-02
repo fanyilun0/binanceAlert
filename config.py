@@ -1,6 +1,12 @@
+import os
+
+# 根据环境变量判断是否在Docker中运行
+IS_DOCKER = os.getenv('IS_DOCKER', 'false').lower() == 'true'
+
 WEBHOOK_URL = 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key='
-PROXY_URL = 'http://localhost:7890'
-USE_PROXY = False
+# 根据运行环境选择代理地址
+PROXY_URL = 'http://host.docker.internal:7890' if IS_DOCKER else 'http://localhost:7890'
+USE_PROXY = True
 ALWAYS_NOTIFY = False
 
 # HTML URL
