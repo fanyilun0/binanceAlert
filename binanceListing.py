@@ -289,13 +289,14 @@ def parse_listing_data(html_content):
         # 解析JSON数据
         json_data = json.loads(script_content.group(1))
         
-        # 查找目标catalog
-        catalogs = json_data['appState']['loader']['dataByRouteId']['d9b2']['catalogs']
+        # 遍历 dataByRouteId 查找目标 catalog
+        route_data = json_data['appState']['loader']['dataByRouteId']
         target_catalog = None
         
-        for catalog in catalogs:
-            if catalog.get('catalogName') == "New Cryptocurrency Listing":
-                target_catalog = catalog
+        for key in route_data:
+            data = route_data[key]
+            if 'catalogDetail' in data and data['catalogDetail'].get('catalogName') == "New Cryptocurrency Listing":
+                target_catalog = data['catalogDetail']
                 break
                 
         if not target_catalog:
