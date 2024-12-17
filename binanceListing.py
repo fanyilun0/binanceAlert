@@ -2,12 +2,13 @@ import requests
 import time
 import aiohttp
 import asyncio
+import random
 from datetime import datetime
 from bs4 import BeautifulSoup
 import json
 import re
 
-from config import WEBHOOK_URL, PROXY_URL, USE_PROXY, ALWAYS_NOTIFY, API_URL, MONITOR_INTERVAL
+from config import COOKIE, WEBHOOK_URL, PROXY_URL, USE_PROXY, ALWAYS_NOTIFY, API_URL, MONITOR_INTERVAL
 
 # HTML URL
 api_url = API_URL
@@ -49,31 +50,43 @@ def log_with_time(message):
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{current_time}] {message}")
 
-# 初始化时获取现有的文章ID
-def initialize_processed_articles():
-    """初始化时获取当前所有文章ID，避免启动时提醒已有文章"""
-    try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
-        response = requests.get(api_url, headers=headers)
-        # print(response.text)
-        print(response.text)
-
-        soup = BeautifulSoup(response.text, 'html.parser')
-        titles = soup.find_all('h1 + div a')
-
-        for title in titles:
-            title_text = title.get_text().strip()
-            content = title.find_next('div')
-            content_text = content.get_text().strip() if content else ""
-            announcement_id = hash(title_text + content_text)
-            processed_article_ids.add(announcement_id)
-
-        log_with_time("Initialization complete. Monitoring new articles...")
-    
-    except Exception as e:
-        log_with_time(f"Error during initialization: {e}")
+def get_random_headers():   
+    # 添加User-Agent池
+    USER_AGENTS = [
+        # Chrome
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        # Firefox
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:120.0) Gecko/20100101 Firefox/120.0",
+        # Safari
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+        # Edge
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0",
+        # Mobile
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_1_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1.2 Mobile/15E148 Safari/604.1",
+        "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+    ]
+    """生成随机的请求头"""
+    return {
+        'authority': 'www.binance.com',
+        'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+        'accept-encoding': 'gzip, deflate, br, zstd',
+        'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8,zh-TW;q=0.7',
+        'cache-control': 'max-age=0',
+        'User-Agent': random.choice(USER_AGENTS),
+        'cookie': COOKIE,
+        'referer': 'https://www.binance.com/en/support/announcement/new-cryptocurrency-listing?c=48&navId=48&hl=en',
+        'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+        'sec-ch-ua-mobile': '?0',
+        'sec-ch-ua-platform': '"Windows"',
+        'sec-fetch-dest': 'document',
+        'sec-fetch-mode': 'navigate',
+        'sec-fetch-site': 'same-origin',
+        'sec-fetch-user': '?1',
+        'upgrade-insecure-requests': '1'
+    }
 
 def get_emoji_for_type(title):
     """根据公告标题返回相应的 emoji"""
@@ -100,36 +113,116 @@ def build_listing_message(title, release_date, link):
         f"链接: {link if link else '无链接'}"
     )
 
-# 检查是否有包含新得币种上线公告
-async def check_for_new_listing_announcements():
-    """检查网页中是否有新的币种上线公告并发送通知"""
+
+def parse_listing_data(html_content):
+    """从HTML内容中解析出新币上线信息"""
     try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
-        response = requests.get(api_url, headers=headers)
-        soup = BeautifulSoup(response.text, 'html.parser')
+        # 查找包含目标数据的script标签
+        pattern = r'<script id="__APP_DATA" type="application/json".*?>(.*?)</script>'
+        script_content = re.search(pattern, html_content, re.DOTALL)
+
+        # Debug
+        # log_with_time(f"script_content: {script_content}")
+
+        if not script_content:
+            log_with_time("No APP_DATA script found")
+            return None
+            
+        # 解析JSON数据
+        json_data = json.loads(script_content.group(1))
         
-        # 找到所有的 h1 标题
-        titles = soup.find_all('h1 + div a')
-
-        for title in titles:
-            title_text = title.get_text().strip()
-            # 获取标题后面的 div 内容
-            content = title.find_next('div')
-            content_text = content.get_text().strip() if content else ""
+        # 直接查找包含 catalogDetail 的路由
+        route_data = None
+        for route_content in json_data['appState']['loader']['dataByRouteId'].values():
+            if 'catalogDetail' in route_content:
+                route_data = route_content
+                break
+                
+        if not route_data or 'catalogDetail' not in route_data:
+            log_with_time("No route with catalogDetail found")
+            return None
             
-            # 生成唯一ID（使用标题和内容的组合）
-            announcement_id = hash(title_text + content_text)
-            
-            if announcement_id not in processed_article_ids:
-                message = build_listing_message(title_text, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), title['href'])
-                log_with_time(message)
-                await send_message_async(message)
-                processed_article_ids.add(announcement_id)
+        catalog_detail = route_data['catalogDetail']
 
+        log_with_time(f"catalog_detail: {catalog_detail}")
+
+        if catalog_detail['catalogName'] != 'New Cryptocurrency Listing':
+            log_with_time(f"Unexpected catalog name: {catalog_detail['catalogName']}")
+            return None
+            
+        articles = catalog_detail['articles']
+        log_with_time(f"Found {len(articles)} articles")
+        
+        formatted_articles = []
+        for article in articles:
+            formatted_article = {
+                'id': article['id'],
+                'code': article['code'],
+                'title': article['title'],
+                'release_date': datetime.fromtimestamp(article['releaseDate']/1000).strftime('%Y-%m-%d %H:%M:%S'),
+                'link': build_article_link(article['title'], article['code'])
+            }
+            formatted_articles.append(formatted_article)
+            
+        return formatted_articles
+
+    except json.JSONDecodeError as e:
+        log_with_time(f"JSON parsing error: {e}")
     except Exception as e:
-        log_with_time(f"Error fetching or processing data: {e}")
+        log_with_time(f"Error parsing listing data: {e}")
+        import traceback
+        log_with_time(f"Detailed error: {traceback.format_exc()}")
+    return None
+
+def save_and_parse_html_content():
+    """保存HTML内容并解析数据"""
+    try:
+        headers = get_random_headers()
+        
+        log_with_time("Starting request...")
+        # log_with_time(f"Using Proxy: {PROXY_URL}")
+
+        response = requests.get(api_url, headers=headers, timeout=10, 
+                              proxies={'http': PROXY_URL, 'https': PROXY_URL} if USE_PROXY else None)
+        log_with_time(f"Response status: {response.status_code}")
+        
+        html = response.text
+        log_with_time(f"Received content length: {len(html)}")
+        
+        # 保存原始HTML
+        with open('binance_listing.html', 'w', encoding='utf-8') as f:
+            f.write(html)
+        log_with_time("Raw HTML saved to binance_listing.html")
+        
+        # 解析数据
+        articles = parse_listing_data(html)
+        if articles:
+            # 保存解析后的数据
+            with open('binance_listing_data.json', 'w', encoding='utf-8') as f:
+                json.dump(articles, f, ensure_ascii=False, indent=2)
+            log_with_time("Parsed data saved to binance_listing_data.json")
+            
+            # 打印最新的5条公告
+            log_with_time("\nLatest 5 announcements:")
+            for article in articles[:5]:
+                log_with_time(f"Title: {article['title']}")
+                log_with_time(f"Release Date: {article['release_date']}")
+                log_with_time("-" * 50)
+        
+        return articles
+        
+    except requests.RequestException as e:
+        log_with_time(f"Request error: {e}")
+    except Exception as e:
+        log_with_time(f"Error in save_and_parse_html_content: {e}")
+    return None
+
+def build_article_link(title, code):
+    """构建文章链接"""
+    base_url = "https://www.binance.com/en/support/announcement/"
+    # 将标题中的空格替换为 "-"，并将其转换为小写
+    formatted_title = title.replace(" ", "-").lower()
+    return f"{base_url}{formatted_title}-{code}"
 
 # 修改 monitor 函数为异步函数
 async def monitor():
@@ -196,186 +289,6 @@ async def monitor():
         log_with_time(f"Waiting for {monitor_interval} seconds before next check...")
         await asyncio.sleep(monitor_interval)
 
-async def save_html_content():
-    """保存HTML内容到本地文件"""
-    try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1'
-        }
-        
-        timeout = aiohttp.ClientTimeout(total=10)  # 10秒超时
-        
-        log_with_time("Starting request...")
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            log_with_time("Sending request to Binance...")
-            async with session.get(api_url, headers=headers, proxy=PROXY_URL if USE_PROXY else None) as response:
-                log_with_time(f"Response status: {response.status}")
-                html = await response.text()
-                log_with_time(f"Received content length: {len(html)}")
-                
-                # 保存原始HTML
-                with open('binance_listing.html', 'w', encoding='utf-8') as f:
-                    f.write(html)
-                log_with_time("Raw HTML saved to binance_listing.html")
-                
-                # 保存格式化后的HTML（便于查看）
-                soup = BeautifulSoup(html, 'html.parser')
-                pretty_html = soup.prettify()
-                with open('binance_listing_formatted.html', 'w', encoding='utf-8') as f:
-                    f.write(pretty_html)
-                log_with_time("Formatted HTML saved to binance_listing_formatted.html")
-                
-                return html
-
-    except aiohttp.ClientError as e:
-        log_with_time(f"Network error: {e}")
-    except asyncio.TimeoutError:
-        log_with_time("Request timed out")
-    except Exception as e:
-        log_with_time(f"Error saving HTML content: {e}")
-    return None
-
-# 或者使用同步方式尝试
-def save_html_content_sync():
-    """使用同步方式保存HTML内容"""
-    try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
-        
-        log_with_time("Starting request...")
-        response = requests.get(api_url, headers=headers, timeout=10, proxies={'http': PROXY_URL, 'https': PROXY_URL} if USE_PROXY else None)
-        log_with_time(f"Response status: {response.status_code}")
-        
-        html = response.text
-        log_with_time(f"Received content length: {len(html)}")
-        
-        # 保存原始HTML
-        with open('binance_listing.html', 'w', encoding='utf-8') as f:
-            f.write(html)
-        log_with_time("Raw HTML saved to binance_listing.html")
-        
-        # 保存格式化后的HTML
-        soup = BeautifulSoup(html, 'html.parser')
-        pretty_html = soup.prettify()
-        with open('binance_listing_formatted.html', 'w', encoding='utf-8') as f:
-            f.write(pretty_html)
-        log_with_time("Formatted HTML saved to binance_listing_formatted.html")
-        
-        return html
-        
-    except requests.RequestException as e:
-        log_with_time(f"Request error: {e}")
-    except Exception as e:
-        log_with_time(f"Error saving HTML content: {e}")
-    return None
-
-def parse_listing_data(html_content):
-    """从HTML内容中解析出新币上线信息"""
-    try:
-        # 查找包含目标数据的script标签
-        pattern = r'<script id="__APP_DATA" type="application/json".*?>(.*?)</script>'
-        script_content = re.search(pattern, html_content, re.DOTALL)
-        
-        if not script_content:
-            log_with_time("No APP_DATA script found")
-            return None
-            
-        # 解析JSON数据
-        json_data = json.loads(script_content.group(1))
-        
-        # 遍历 dataByRouteId 查找目标 catalog
-        route_data = json_data['appState']['loader']['dataByRouteId']
-        target_catalog = None
-        
-        for key in route_data:
-            data = route_data[key]
-            if 'catalogDetail' in data and data['catalogDetail'].get('catalogName') == "New Cryptocurrency Listing":
-                target_catalog = data['catalogDetail']
-                break
-                
-        if not target_catalog:
-            log_with_time("No New Cryptocurrency Listing catalog found")
-            return None
-            
-        # 解析文章列表
-        articles = target_catalog['articles']
-        log_with_time(f"Found {len(articles)} articles")
-        
-        # 格式化文章信息
-        formatted_articles = []
-        for article in articles:
-            formatted_article = {
-                'id': article['id'],
-                'code': article['code'],
-                'title': article['title'],
-                'release_date': datetime.fromtimestamp(article['releaseDate']/1000).strftime('%Y-%m-%d %H:%M:%S'),
-                'link': build_article_link(article['title'], article['code'])
-            }
-            formatted_articles.append(formatted_article)
-            
-        return formatted_articles
-
-    except json.JSONDecodeError as e:
-        log_with_time(f"JSON parsing error: {e}")
-    except Exception as e:
-        log_with_time(f"Error parsing listing data: {e}")
-    return None
-
-def save_and_parse_html_content():
-    """保存HTML内容并解析数据"""
-    try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
-        
-        log_with_time("Starting request...")
-        response = requests.get(api_url, headers=headers, timeout=10, 
-                              proxies={'http': PROXY_URL, 'https': PROXY_URL} if USE_PROXY else None)
-        log_with_time(f"Response status: {response.status_code}")
-        
-        html = response.text
-        log_with_time(f"Received content length: {len(html)}")
-        
-        # 保存原始HTML
-        with open('binance_listing.html', 'w', encoding='utf-8') as f:
-            f.write(html)
-        log_with_time("Raw HTML saved to binance_listing.html")
-        
-        # 解析数据
-        articles = parse_listing_data(html)
-        if articles:
-            # 保存解析后的数据
-            with open('binance_listing_data.json', 'w', encoding='utf-8') as f:
-                json.dump(articles, f, ensure_ascii=False, indent=2)
-            log_with_time("Parsed data saved to binance_listing_data.json")
-            
-            # 打印最新的5条公告
-            log_with_time("\nLatest 5 announcements:")
-            for article in articles[:5]:
-                log_with_time(f"Title: {article['title']}")
-                log_with_time(f"Release Date: {article['release_date']}")
-                log_with_time("-" * 50)
-        
-        return articles
-        
-    except requests.RequestException as e:
-        log_with_time(f"Request error: {e}")
-    except Exception as e:
-        log_with_time(f"Error in save_and_parse_html_content: {e}")
-    return None
-
-def build_article_link(title, code):
-    """构建文章链接"""
-    base_url = "https://www.binance.com/en/support/announcement/"
-    # 将标题中的空格替换为 "-"，并将其转换为小写
-    formatted_title = title.replace(" ", "-").lower()
-    return f"{base_url}{formatted_title}-{code}"
 
 # 修改 main 部分
 if __name__ == "__main__":
